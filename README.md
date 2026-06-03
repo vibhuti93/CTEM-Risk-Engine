@@ -1,14 +1,18 @@
-# CTEM Continuous Threat Exposure Management - Risk Intelligence Engine
+# CTEM Risk Intelligence Engine 
 
-Central intelligence processor built for high-throughput vulnerability prioritization.
+A high-throughput, event-driven vulnerability prioritization engine built for Continuous Threat Exposure Management (CTEM). 
 
-## Tech Stack
-- **FastAPI**: Async orchestration and REST triage endpoints.
-- **NATS JetStream**: Zero-latency distributed message broker event architecture.
-- **Redis**: Fast lookup cache layer for external threat feeds (EPSS/CISA KEV).
-- **Pydantic**: JSON data validation contracts.
+## Architecture Overview
+This microservice acts as the central intelligence processor in a distributed cybersecurity architecture. It ingests verified IT/OT assets, cross-references vulnerabilities against threat intelligence metrics, and computes a multi-factor risk score to determine SLA triage tiers.
 
-## Architecture Pipeline
-1. Ingests verified assets from upstream discovery modules.
-2. Cross-references vulnerabilities with live threat feeds.
-3. Computes a multi-factor risk score to determine SLA triage tiers.
+### Tech Stack
+* **FastAPI**: Asynchronous API and pipeline orchestration.
+* **NATS JetStream**: Zero-latency distributed message broker for pub/sub event routing.
+* **Redis**: High-speed lookup cache for external threat feeds (EPSS, CISA KEV).
+* **Pydantic**: Strict JSON data validation and contract enforcement.
+
+## The Risk Scoring Formula
+The engine shifts away from static CVSS scores by incorporating real-world exploitability.
+`Composite Score = (CVSS * 10) * (EPSS * 100) * KEV_Multiplier * Asset_Weight * Exposure`
+
+*Findings are automatically categorized into SLA Tiers (P1-Critical to P4-Low) based on active exploitation flags and environmental context.*
