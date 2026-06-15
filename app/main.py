@@ -1,82 +1,72 @@
-from fastapi import FastAPI, BackgroundTasks
-from app.models import AssetPayload, RawFinding, EnrichedFinding
-from app.risk_engine import RiskCalculator
-from app.messaging import NatsBroker
 import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.orm import Session
 
-app = FastAPI(title="Team 3: Risk Scoring Engine", version="1.0.0")
+from app.database import SessionLocal, engine, Base, CVETable
+from app.models import AssetTrigger
+from app.cve_fetcher import fetch_and_store_cves
 
-# Initialize our custom modules
-broker = NatsBroker()
-risk_engine = RiskCalculator()
+async def automated_threat_ingestion():
+    """Runs continuously in the background to keep the vault hydrated."""
+    while True:
+        print("\n[INFO] AUTO-FETCHER: Waking up to sync with CIRCL API...")
+        # INCREASED: Pulls 50 records automatically instead of 5
+        await fetch_and_store_cves(limit=50)
+        print("[INFO] AUTO-FETCHER: Sync complete. Going back to sleep.")
+        await asyncio.sleep(60)
 
-@app.on_event("startup")
-async def startup_event():
-    """Fires when the FastAPI server starts up."""
-    await broker.connect()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("[+] Initializing threat intelligence vault...")
+    Base.metadata.create_all(bind=engine)
     
-    # In Phase 2, we will uncomment the line below to listen to live traffic from Team 2.
-    # For now, we are triggering scans manually via the REST API to validate the math.
-    # await broker.subscribe_to_assets(handle_incoming_asset)
-
-def simulate_scans(asset: AssetPayload) -> list[RawFinding]:
-    """Mocks OWASP ZAP and Trivy output for standalone validation."""
-    print(f"Executing mock scans against {asset.value}...")
-    return [
-        RawFinding(
-            cve_id="CVE-2023-44487", 
-            cvss_base=7.5, 
-            vulnerability_name="HTTP/2 Rapid Reset", 
-            tool="ZAP"
-        ),
-        RawFinding(
-            cve_id="CVE-2021-44228", 
-            cvss_base=10.0, 
-            vulnerability_name="Log4Shell", 
-            tool="Trivy"
-        )
-    ]
-
-async def process_asset_pipeline(asset: AssetPayload):
-    """The core intelligence loop: Ingest -> Scan -> Score -> Publish."""
-    print(f"\n--- Starting Pipeline for Asset: {asset.asset_id} ({asset.value}) ---")
+    fetcher_task = asyncio.create_task(automated_threat_ingestion())
     
-    # 1. Execute the mock scanners
-    raw_findings = simulate_scans(asset)
-    
-    # 2. Process and score each finding asynchronously
-    for raw in raw_findings:
-        print(f"Evaluating {raw.cve_id}...")
-        
-        score, sla, metrics = await risk_engine.calculate_score(
-            raw, 
-            asset_context={"weight": 1.5, "exposure": 1.5}
-        )
-        
-        enriched = EnrichedFinding(
-            asset_id=asset.asset_id,
-            vulnerability=raw.vulnerability_name,
-            cve_id=raw.cve_id,
-            tool_used=raw.tool,
-            composite_risk_score=score,
-            sla_tier=sla,
-            metrics=metrics
-        )
-        
-        # 3. Publish the finalized intelligence to NATS for Teams 4 & 5
-        await broker.publish_finding(enriched)
-    
-    print(f"--- Pipeline Complete for {asset.asset_id} ---\n")
+    print("[+] Connecting to NATS JetStream...")
+    yield
+    print("[-] Cancelling background tasks and closing connections...")
+    fetcher_task.cancel()
 
-@app.post("/scan/trigger")
-async def trigger_scan(asset: AssetPayload, background_tasks: BackgroundTasks):
-    """
-    Manual REST endpoint. Acts as a handshake to validate the pipeline 
-    without needing a live upstream NATS feed from Team 2.
-    """
-    # We pass the heavy processing to a background task so the API responds instantly
-    background_tasks.add_task(process_asset_pipeline, asset)
+app = FastAPI(
+    title="CyArt Team 3 Risk Engine",
+    description="Lead Orchestrator API for Vulnerability Ingestion & Routing",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.post("/scan/trigger", tags=["Orchestration"])
+async def trigger_scan(payload: AssetTrigger):
+    print(f"\n[*] Starting Pipeline for Asset: {payload.asset_id} ({payload.value})")
     return {
-        "status": "accepted", 
-        "message": f"Asset {asset.asset_id} queued for risk processing."
+        "status": "accepted",
+        "message": f"Asset {payload.asset_id} queued for risk processing."
     }
+
+@app.post("/intel/ingest-cves", tags=["Threat Intelligence"])
+async def trigger_cve_ingestion():
+    print("[*] Initiating external API call to pull 100 recent vulnerabilities...")
+    # INCREASED: Manual trigger now pulls 100 records
+    success = await fetch_and_store_cves(limit=100)
+    if success:
+        return {
+            "status": "success",
+            "message": "Successfully pulled and stored latest CVEs in the database."
+        }
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="CVE ingestion failed. Check server logs."
+        )
+
+@app.get("/intel/cves", tags=["Threat Intelligence"])
+# INCREASED: API returns up to 50 records by default
+def get_cached_cves(limit: int = 50, db: Session = Depends(get_db)):
+    return db.query(CVETable).limit(limit).all()
