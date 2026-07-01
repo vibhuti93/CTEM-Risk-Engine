@@ -1,0 +1,6 @@
+{
+  "asset_id": "DB-PROD-01",
+  "value": "CVE-2026-9125",
+  "open_ports":"",
+  "source": "Team 2 Nmap Scanner"
+}
